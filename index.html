@@ -78,8 +78,8 @@
     <button onclick="deleteCurrentRow()">- 刪除列</button>
     <button onclick="addColumn()">+ 新增欄</button>
     <button onclick="deleteCurrentColumn()">- 刪除欄</button>
-    <button class="danger" onclick="clearContent()">清空文字</button>
-    <button class="danger" onclick="resetTableRows()">🧹 清除表格(僅留標題)</button>
+    <button class="danger" onclick="clearContent()">清空選取文字</button>
+    <button class="danger" onclick="clearAllTableData()">🧹 清空表格文字(保留行列)</button>
   </div>
 
   <!-- 3. 合併與尺寸/邊界/內距微調區 -->
@@ -592,10 +592,10 @@
     }
   }
 
-  /* 清除表格，僅保留第一列標題 */
-  function resetTableRows() {
-    if (confirm('確定要刪除所有資料列，只保留第一列標題嗎？')) {
-      document.getElementById('tableBody').innerHTML = '';
+  /* 清空表格文字 (完整保留行列結構與標題列) */
+  function clearAllTableData() {
+    if (confirm('確定要清空所有表格內的文字資料嗎？（將完整保留所有列與欄位）')) {
+      document.querySelectorAll('#tableBody td').forEach(td => td.innerText = '');
       clearSelection();
     }
   }
