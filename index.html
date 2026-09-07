@@ -1,0 +1,790 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Supabase 雲端同步表格與範本系統</title>
+  <!-- 載入 Supabase JS SDK -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    body { font-family: "Microsoft JhengHei", Arial, sans-serif; margin: 4px; background-color: #f4f6f9; color: #333; font-size: 11px; }
+    .container { max-width: 100%; margin: 0 auto; background: #fff; padding: 6px; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    
+    .toolbar-group { display: flex; flex-wrap: wrap; gap: 3px; margin-bottom: 4px; align-items: center; background: #f8f9fa; padding: 3px 5px; border-radius: 3px; border: 1px solid #e9ecef; }
+    .toolbar-group label { font-weight: bold; font-size: 11px; margin-right: 1px; color: #444; }
+    
+    button { padding: 2px 5px; border: 1px solid #ccc; border-radius: 2px; cursor: pointer; font-size: 11px; background-color: #fff; color: #333; transition: 0.1s; line-height: 1.1; }
+    button:hover { background-color: #e9ecef; }
+    button.primary { background-color: #007bff; color: white; border-color: #007bff; }
+    button.success { background-color: #28a745; color: white; border-color: #28a745; }
+    button.danger { background-color: #dc3545; color: white; border-color: #dc3545; }
+    button.active { background-color: #0056b3; color: white; border-color: #004085; }
+
+    input[type="text"], input[type="number"], select { padding: 1px 3px; border: 1px solid #ccc; border-radius: 2px; font-size: 11px; height: 20px; box-sizing: border-box; }
+    input[type="color"] { width: 18px; height: 18px; border: none; cursor: pointer; background: transparent; padding: 0; vertical-align: middle; }
+
+    .formula-tip { font-size: 10px; color: #0056b3; background: #eef6ff; padding: 2px 6px; border-radius: 2px; border: 1px solid #b8daff; width: 100%; box-sizing: border-box; }
+    .cloud-badge { font-size: 10px; padding: 1px 4px; background: #3ecf8e; color: white; border-radius: 2px; font-weight: bold; }
+
+    .table-wrapper { overflow-x: auto; margin-top: 4px; }
+    table { border-collapse: collapse; background: white; table-layout: fixed; min-width: 100%; font-size: 11px; }
+    th, td { 
+      border: 1px solid #ccc; 
+      padding: 0px 2px; 
+      text-align: left; 
+      min-width: 25px; 
+      height: 16px; 
+      line-height: 1.2;
+      word-break: break-word; 
+      resize: both; 
+      overflow: auto;
+      box-sizing: border-box;
+    }
+    th { background-color: #f1f3f5; font-weight: bold; }
+    .col-badge { display: inline-block; background: #6c757d; color: white; border-radius: 2px; padding: 0px 3px; font-size: 9px; margin-right: 2px; font-family: monospace; }
+    td.selected-cell, th.selected-cell { outline: 2px solid #007bff !important; background-color: #e8f4ff !important; }
+
+    .fullscreen-overlay {
+      display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+      background: white; z-index: 9999; padding: 6px; box-sizing: border-box; overflow: auto;
+    }
+    .fullscreen-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; padding-bottom: 4px; border-bottom: 2px solid #007bff; }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <!-- 1. 雲端範本管理區 -->
+  <div class="toolbar-group">
+    <label>雲端範本：</label>
+    <select id="templateSelect"><option value="">-- 載入中... --</option></select>
+    <button class="primary" onclick="useTemplateFullScreen()">🚀 全螢幕使用/編輯</button>
+    <button onclick="loadTemplateForEdit()">✏️ 載入主頁編輯</button>
+    <button class="danger" onclick="deleteTemplate()">🗑️ 刪除範本</button>
+    <span style="color:#ccc;">|</span>
+    <input type="text" id="templateName" placeholder="新範本名稱" style="width:90px;">
+    <button class="success" onclick="saveTemplate()">💾 儲存至雲端</button>
+    <span class="cloud-badge">☁️ Supabase 已連線</span>
+  </div>
+
+  <div class="formula-tip">
+    💡 <b>試算公式指南：</b> 輸入以 <code>=</code> 開頭即可計算，如 <code>=A1+B1</code>、<code>=A1*1.05</code>、<code>=SUM(A1:A5)</code>、<code>=AVERAGE(A1:A5)</code>、<code>=COUNT(A1:A5)</code>
+  </div>
+
+  <!-- 2. 表格架構與選取控制 -->
+  <div class="toolbar-group">
+    <label>選取/架構：</label>
+    <button id="btnMultiSelectMode" onclick="toggleMultiSelectMode()">☑️ 複選模式: 關</button>
+    <button onclick="selectAllCells()">全選</button>
+    <button onclick="clearSelection()">取消選取</button>
+    <span style="color:#ccc; margin: 0 2px;">|</span>
+    <button onclick="addRow()">+ 新增列</button>
+    <button onclick="deleteCurrentRow()">- 刪除列</button>
+    <button onclick="addColumn()">+ 新增欄</button>
+    <button onclick="deleteCurrentColumn()">- 刪除欄</button>
+    <button class="danger" onclick="clearContent()">清空</button>
+  </div>
+
+  <!-- 3. 合併與尺寸/邊界/內距微調區 -->
+  <div class="toolbar-group">
+    <label>尺寸/合併：</label>
+    <button onclick="mergeRight()">右併</button>
+    <button onclick="mergeDown()">下併</button>
+    <button onclick="splitCell()">拆分</button>
+    <span style="color:#ccc; margin: 0 2px;">|</span>
+    <input type="number" id="cellWidth" placeholder="寬px" style="width:45px;" onchange="setCellDimension('width', this.value)">
+    <input type="number" id="cellHeight" placeholder="高px" style="width:45px;" onchange="setCellDimension('height', this.value)">
+    <span style="color:#ccc; margin: 0 2px;">|</span>
+    <label>內距：</label>
+    <input type="number" id="padV" placeholder="上下" style="width:40px;" value="0" min="0" onchange="setCellPadding()">
+    <input type="number" id="padH" placeholder="左右" style="width:40px;" value="2" min="0" onchange="setCellPadding()">
+  </div>
+
+  <!-- 4. 樣式/對齊與字級區 -->
+  <div class="toolbar-group">
+    <label>格式與邊框：</label>
+    <button id="btnAlignLeft" onclick="applyStyle('textAlign', 'left')">靠左</button>
+    <button id="btnAlignCenter" onclick="applyStyle('textAlign', 'center')">置中</button>
+    <button id="btnAlignRight" onclick="applyStyle('textAlign', 'right')">靠右</button>
+    <span style="color:#ccc; margin: 0 2px;">|</span>
+    <select id="borderWidthSelect" onchange="applyStyle('borderWidth', this.value)">
+      <option value="">邊框粗細</option>
+      <option value="0px">無邊框 (0px)</option>
+      <option value="1px">細線 (1px)</option>
+      <option value="2px">中線 (2px)</option>
+      <option value="3px">粗線 (3px)</option>
+      <option value="4px">特粗 (4px)</option>
+    </select>
+    <span style="color:#ccc; margin: 0 2px;">|</span>
+    <select id="fontSizeSelect" onchange="applyStyle('fontSize', this.value)">
+      <option value="">字級選單</option>
+      <option value="9px">9px (極小)</option>
+      <option value="10px">10px</option>
+      <option value="11px">11px (預設)</option>
+      <option value="12px">12px</option>
+      <option value="14px">14px</option>
+      <option value="16px">16px</option>
+      <option value="18px">18px</option>
+      <option value="20px">20px</option>
+      <option value="24px">24px (大)</option>
+      <option value="28px">28px</option>
+      <option value="32px">32px (特大)</option>
+      <option value="36px">36px</option>
+      <option value="48px">48px (超大)</option>
+      <option value="64px">64px (巨大)</option>
+    </select>
+    <button id="btnBold" onclick="toggleBold()"><b>B</b> 粗體</button>
+    <button id="btnStrikethrough" onclick="toggleStrikethrough()"><s>S</s> 刪除線</button>
+    <span style="color:#ccc; margin: 0 2px;">|</span>
+    <label style="font-size:10px;">字色</label>
+    <input type="color" id="textColorPicker" onchange="applyStyle('color', this.value)">
+    <label style="font-size:10px; margin-left:2px;">底色</label>
+    <input type="color" id="bgColorPicker" onchange="applyStyle('backgroundColor', this.value)">
+    <button onclick="clearStyle()">重設樣式</button>
+  </div>
+
+  <!-- 表格顯示區 -->
+  <div class="table-wrapper">
+    <table id="dataTable">
+      <thead id="tableHeader">
+        <tr>
+          <th contenteditable="true" style="width: 80px;"><span class="col-badge">A</span>欄位 1</th>
+          <th contenteditable="true" style="width: 80px;"><span class="col-badge">B</span>欄位 2</th>
+          <th contenteditable="true" style="width: 80px;"><span class="col-badge">C</span>欄位 3</th>
+        </tr>
+      </thead>
+      <tbody id="tableBody">
+        <tr>
+          <td contenteditable="true">10</td>
+          <td contenteditable="true">20</td>
+          <td contenteditable="true">=A1+B1</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- 5. 全螢幕使用範本視窗 -->
+<div id="fullscreenOverlay" class="fullscreen-overlay">
+  <div class="fullscreen-header">
+    <h3 id="fsTitle" style="margin:0;">全螢幕使用模式</h3>
+    <div>
+      <button class="primary" onclick="saveCurrentFullScreenTemplate()">💾 儲存修改 (覆蓋原範本)</button>
+      <button class="success" onclick="saveFullScreenAsNewTemplate()">💾 另存為新範本</button>
+      <button onclick="exportFullScreenToCSV()">📥 匯出 CSV</button>
+      <button onclick="window.print()">🖨️ 列印 / PDF</button>
+      <button class="danger" onclick="closeFullScreen()">✕ 關閉全螢幕</button>
+    </div>
+  </div>
+  <div id="fsTableContainer" class="table-wrapper"></div>
+</div>
+
+<script>
+  /* ----------------------------------------------------
+     Supabase 設定區 (請將以下替換為您的 Supabase 專案資訊)
+  ---------------------------------------------------- */
+  const SUPABASE_URL = 'YOUR_SUPABASE_URL'; 
+  const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';
+  const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  let selectedCells = [];
+  let isMultiSelectMode = false;
+  let currentActiveTemplateName = '';
+
+  document.addEventListener('DOMContentLoaded', () => {
+    bindTableEvents(document.getElementById('dataTable'));
+    updateColBadges(document.getElementById('dataTable'));
+    recalculateTable(document.getElementById('dataTable'));
+    fetchTemplatesFromCloud(); // 頁面初始化時自動抓取雲端範本
+  });
+
+  /* --- Supabase 雲端資料庫操作 --- */
+  async function fetchTemplatesFromCloud() {
+    const select = document.getElementById('templateSelect');
+    select.innerHTML = '<option value="">-- 讀取雲端範本中... --</option>';
+
+    const { data, error } = await supabaseClient.from('templates').select('name').order('name');
+    
+    if (error) {
+      console.error(error);
+      select.innerHTML = '<option value="">❌ 載入失敗，請檢查 Supabase 金鑰</option>';
+      return;
+    }
+
+    select.innerHTML = '<option value="">-- 選擇雲端範本 --</option>';
+    data.forEach(item => {
+      const option = document.createElement('option');
+      option.value = item.name;
+      option.textContent = item.name;
+      select.appendChild(option);
+    });
+  }
+
+  async function saveTemplate() {
+    const nameInput = document.getElementById('templateName');
+    const name = nameInput.value.trim();
+    if (!name) return alert('請輸入範本名稱！');
+
+    const tableData = getTableDataFromElement(document.getElementById('dataTable'));
+
+    const { error } = await supabaseClient.from('templates').upsert({
+      name: name,
+      data: tableData,
+      updated_at: new Date()
+    }, { onConflict: 'name' });
+
+    if (error) {
+      alert('儲存失敗：' + error.message);
+    } else {
+      nameInput.value = '';
+      await fetchTemplatesFromCloud();
+      alert(`範本「${name}」已成功同步上傳至雲端！`);
+    }
+  }
+
+  async function loadTemplateForEdit() {
+    const name = document.getElementById('templateSelect').value;
+    if (!name) return alert('請先選擇雲端範本！');
+
+    const { data, error } = await supabaseClient.from('templates').select('data').eq('name', name).single();
+
+    if (error || !data) {
+      alert('無法載入該範本！');
+    } else {
+      currentActiveTemplateName = name;
+      renderTableFromData(document.getElementById('dataTable'), data.data, true);
+      alert(`已成功載入雲端範本「${name}」！`);
+    }
+  }
+
+  async function deleteTemplate() {
+    const name = document.getElementById('templateSelect').value;
+    if (!name) return alert('請先選擇要刪除的雲端範本！');
+
+    if (confirm(`確定要從雲端永久刪除範本「${name}」嗎？`)) {
+      const { error } = await supabaseClient.from('templates').delete().eq('name', name);
+      if (error) {
+        alert('刪除失敗：' + error.message);
+      } else {
+        await fetchTemplatesFromCloud();
+        alert(`範本「${name}」已刪除！`);
+      }
+    }
+  }
+
+  async function useTemplateFullScreen() {
+    const name = document.getElementById('templateSelect').value;
+    if (!name) return alert('請先選擇雲端範本！');
+
+    const { data, error } = await supabaseClient.from('templates').select('data').eq('name', name).single();
+    if (error || !data) return alert('無法載入範本！');
+
+    currentActiveTemplateName = name;
+    const container = document.getElementById('fsTableContainer');
+    container.innerHTML = '<table><thead></thead><tbody></tbody></table>';
+    const fsTable = container.querySelector('table');
+    renderTableFromData(fsTable, data.data, true);
+    bindTableEvents(fsTable);
+
+    document.getElementById('fsTitle').innerText = `全螢幕使用/試算：${name}`;
+    document.getElementById('fullscreenOverlay').style.display = 'block';
+  }
+
+  async function saveCurrentFullScreenTemplate() {
+    const fsTable = document.querySelector('#fsTableContainer table');
+    if (!fsTable || !currentActiveTemplateName) return;
+
+    if (confirm(`確定要將目前的修改同步覆蓋回雲端範本「${currentActiveTemplateName}」嗎？`)) {
+      const tableData = getTableDataFromElement(fsTable);
+      const { error } = await supabaseClient.from('templates').upsert({
+        name: currentActiveTemplateName,
+        data: tableData,
+        updated_at: new Date()
+      }, { onConflict: 'name' });
+
+      if (error) alert('更新失敗：' + error.message);
+      else alert(`雲端範本「${currentActiveTemplateName}」已更新！`);
+    }
+  }
+
+  async function saveFullScreenAsNewTemplate() {
+    const fsTable = document.querySelector('#fsTableContainer table');
+    if (!fsTable) return;
+
+    const name = prompt('請輸入新範本名稱：');
+    if (!name || !name.trim()) return;
+
+    const tableData = getTableDataFromElement(fsTable);
+    const { error } = await supabaseClient.from('templates').upsert({
+      name: name.trim(),
+      data: tableData,
+      updated_at: new Date()
+    }, { onConflict: 'name' });
+
+    if (error) {
+      alert('儲存失敗：' + error.message);
+    } else {
+      await fetchTemplatesFromCloud();
+      alert(`已成功另存為新雲端範本「${name.trim()}」！`);
+    }
+  }
+
+  /* --- 試算公式引擎 --- */
+  function colLetterToIndex(colStr) {
+    let num = 0;
+    for (let i = 0; i < colStr.length; i++) num = num * 26 + (colStr.charCodeAt(i) - 64);
+    return num - 1;
+  }
+
+  function indexToColLetter(index) {
+    let temp, letter = '';
+    while (index >= 0) {
+      temp = index % 26;
+      letter = String.fromCharCode(temp + 65) + letter;
+      index = Math.floor(index / 26) - 1;
+    }
+    return letter;
+  }
+
+  function getCellValueByRef(ref, table) {
+    const match = ref.toUpperCase().match(/^([A-Z]+)([0-9]+)$/);
+    if (!match) return 0;
+    const colIdx = colLetterToIndex(match[1]);
+    const rowIdx = parseInt(match[2], 10) - 1;
+    const rows = table.querySelectorAll('tbody tr');
+    if (rows[rowIdx] && rows[rowIdx].children[colIdx]) {
+      const cell = rows[rowIdx].children[colIdx];
+      const val = parseFloat(cell.getAttribute('data-val') || cell.innerText.trim());
+      return isNaN(val) ? 0 : val;
+    }
+    return 0;
+  }
+
+  function getRangeValues(rangeStr, table) {
+    const [start, end] = rangeStr.split(':');
+    if (!end) return [getCellValueByRef(start, table)];
+    const m1 = start.toUpperCase().match(/^([A-Z]+)([0-9]+)$/);
+    const m2 = end.toUpperCase().match(/^([A-Z]+)([0-9]+)$/);
+    if (!m1 || !m2) return [];
+
+    const colStart = colLetterToIndex(m1[1]), rowStart = parseInt(m1[2], 10) - 1;
+    const colEnd = colLetterToIndex(m2[1]), rowEnd = parseInt(m2[2], 10) - 1;
+
+    const vals = [];
+    const rows = table.querySelectorAll('tbody tr');
+    for (let r = Math.min(rowStart, rowEnd); r <= Math.max(rowStart, rowEnd); r++) {
+      if (rows[r]) {
+        for (let c = Math.min(colStart, colEnd); c <= Math.max(colStart, colEnd); c++) {
+          if (rows[r].children[c]) {
+            const cell = rows[r].children[c];
+            const val = parseFloat(cell.getAttribute('data-val') || cell.innerText.trim());
+            vals.push(isNaN(val) ? 0 : val);
+          }
+        }
+      }
+    }
+    return vals;
+  }
+
+  function evaluateFormula(formula, table) {
+    try {
+      let expr = formula.substring(1).trim().toUpperCase();
+      expr = expr.replace(/(SUM|AVERAGE|AVG|COUNT|MIN|MAX)\(([^)]+)\)/g, (match, func, args) => {
+        let numbers = [];
+        args.split(',').forEach(part => {
+          part = part.trim();
+          if (part.includes(':')) numbers = numbers.concat(getRangeValues(part, table));
+          else numbers.push(getCellValueByRef(part, table));
+        });
+        if (func === 'SUM') return numbers.reduce((a, b) => a + b, 0);
+        if (func === 'AVERAGE' || func === 'AVG') return numbers.length ? (numbers.reduce((a, b) => a + b, 0) / numbers.length) : 0;
+        if (func === 'COUNT') return numbers.length;
+        if (func === 'MIN') return numbers.length ? Math.min(...numbers) : 0;
+        if (func === 'MAX') return numbers.length ? Math.max(...numbers) : 0;
+        return 0;
+      });
+
+      expr = expr.replace(/\b([A-Z]+[0-9]+)\b/g, (match) => getCellValueByRef(match, table));
+
+      if (/^[0-9.+\-*/() ]+$/.test(expr)) {
+        const result = Function('"use strict"; return (' + expr + ')')();
+        return isNaN(result) ? '#VALUE!' : (Math.round(result * 100000) / 100000);
+      } else return '#ERROR!';
+    } catch (e) { return '#ERROR!'; }
+  }
+
+  function recalculateTable(table) {
+    for (let pass = 0; pass < 3; pass++) {
+      const cells = table.querySelectorAll('td[data-formula], th[data-formula]');
+      cells.forEach(cell => {
+        const formula = cell.dataset.formula;
+        if (formula) {
+          const val = evaluateFormula(formula, table);
+          cell.setAttribute('data-val', val);
+          if (document.activeElement !== cell) cell.innerText = val;
+        }
+      });
+    }
+  }
+
+  function updateColBadges(table) {
+    table.querySelectorAll('thead th').forEach((th, idx) => {
+      let badge = th.querySelector('.col-badge');
+      if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'col-badge';
+        th.prepend(badge);
+      }
+      badge.innerText = indexToColLetter(idx);
+    });
+  }
+
+  function bindTableEvents(table) {
+    table.addEventListener('click', (e) => {
+      const cell = e.target.closest('th, td');
+      if (!cell) return;
+      const isCtrl = e.ctrlKey || e.metaKey;
+      if (isMultiSelectMode || isCtrl) {
+        if (selectedCells.includes(cell)) {
+          cell.classList.remove('selected-cell');
+          selectedCells = selectedCells.filter(c => c !== cell);
+        } else {
+          cell.classList.add('selected-cell');
+          selectedCells.push(cell);
+        }
+      } else {
+        clearSelection();
+        cell.classList.add('selected-cell');
+        selectedCells = [cell];
+      }
+      syncToolbarWithSelection();
+    });
+
+    table.addEventListener('focusin', (e) => {
+      const cell = e.target.closest('th, td');
+      if (cell && cell.dataset.formula) cell.innerText = cell.dataset.formula;
+    });
+
+    table.addEventListener('focusout', (e) => {
+      const cell = e.target.closest('th, td');
+      if (cell) {
+        const text = cell.innerText.trim();
+        if (text.startsWith('=')) cell.dataset.formula = text;
+        else { delete cell.dataset.formula; cell.removeAttribute('data-val'); }
+        recalculateTable(table);
+      }
+    });
+
+    table.addEventListener('input', () => recalculateTable(table));
+  }
+
+  /* --- 介面操作輔助函式 --- */
+  function toggleMultiSelectMode() {
+    isMultiSelectMode = !isMultiSelectMode;
+    const btn = document.getElementById('btnMultiSelectMode');
+    btn.innerText = isMultiSelectMode ? '☑️ 複選模式: 開' : '☑️ 複選模式: 關';
+    btn.classList.toggle('active', isMultiSelectMode);
+  }
+
+  function selectAllCells() {
+    clearSelection();
+    document.querySelectorAll('#dataTable th, #dataTable td').forEach(c => {
+      c.classList.add('selected-cell'); selectedCells.push(c);
+    });
+    syncToolbarWithSelection();
+  }
+
+  function clearSelection() {
+    selectedCells.forEach(c => c.classList.remove('selected-cell'));
+    selectedCells = [];
+  }
+
+  function syncToolbarWithSelection() {
+    if (selectedCells.length === 0) return;
+    const targetCell = selectedCells[0];
+    document.getElementById('cellWidth').value = parseInt(targetCell.style.width) || targetCell.offsetWidth;
+    document.getElementById('cellHeight').value = parseInt(targetCell.style.height) || targetCell.offsetHeight;
+    const pTop = parseInt(window.getComputedStyle(targetCell).paddingTop) || 0;
+    const pLeft = parseInt(window.getComputedStyle(targetCell).paddingLeft) || 0;
+    document.getElementById('padV').value = pTop;
+    document.getElementById('padH').value = pLeft;
+
+    const currentAlign = targetCell.style.textAlign || 'left';
+    document.getElementById('btnAlignLeft').classList.toggle('active', currentAlign === 'left');
+    document.getElementById('btnAlignCenter').classList.toggle('active', currentAlign === 'center');
+    document.getElementById('btnAlignRight').classList.toggle('active', currentAlign === 'right');
+    document.getElementById('btnBold').classList.toggle('active', targetCell.style.fontWeight === 'bold');
+    document.getElementById('btnStrikethrough').classList.toggle('active', targetCell.style.textDecoration === 'line-through');
+    document.getElementById('borderWidthSelect').value = targetCell.style.borderWidth || '';
+    document.getElementById('fontSizeSelect').value = targetCell.style.fontSize || '';
+  }
+
+  function setCellDimension(type, val) {
+    if (selectedCells.length === 0) return alert('請先點選儲存格！');
+    if (val && val > 0) selectedCells.forEach(cell => cell.style[type] = val + 'px');
+  }
+
+  function setCellPadding() {
+    if (selectedCells.length === 0) return alert('請先點選儲存格！');
+    const v = document.getElementById('padV').value || 0;
+    const h = document.getElementById('padH').value || 0;
+    selectedCells.forEach(cell => {
+      cell.style.paddingTop = v + 'px'; cell.style.paddingBottom = v + 'px';
+      cell.style.paddingLeft = h + 'px'; cell.style.paddingRight = h + 'px';
+    });
+  }
+
+  function mergeRight() {
+    if (selectedCells.length === 0) return alert('請選擇起始儲存格！');
+    const activeCell = selectedCells[0];
+    const nextCell = activeCell.nextElementSibling;
+    if (!nextCell || nextCell.tagName !== activeCell.tagName) return alert('右側無可合併儲存格！');
+    if ((activeCell.rowSpan || 1) !== (nextCell.rowSpan || 1)) return alert('高度不一致無法合併！');
+
+    activeCell.colSpan = (activeCell.colSpan || 1) + (nextCell.colSpan || 1);
+    if (nextCell.innerText.trim()) activeCell.innerText = (activeCell.innerText + ' ' + nextCell.innerText).trim();
+    nextCell.remove();
+    clearSelection();
+  }
+
+  function mergeDown() {
+    if (selectedCells.length === 0) return alert('請選擇起始儲存格！');
+    const activeCell = selectedCells[0];
+    const tr = activeCell.closest('tr');
+    const nextTr = tr.nextElementSibling;
+    if (!nextTr) return alert('下方無可合併列！');
+
+    const cellBelow = nextTr.children[activeCell.cellIndex];
+    if (!cellBelow || cellBelow.tagName !== activeCell.tagName) return alert('下方無對應儲存格！');
+    if ((activeCell.colSpan || 1) !== (cellBelow.colSpan || 1)) return alert('寬度不一致無法合併！');
+
+    activeCell.rowSpan = (activeCell.rowSpan || 1) + (cellBelow.rowSpan || 1);
+    if (cellBelow.innerText.trim()) activeCell.innerText = (activeCell.innerText + ' ' + cellBelow.innerText).trim();
+    cellBelow.remove();
+    clearSelection();
+  }
+
+  function splitCell() {
+    if (selectedCells.length === 0) return alert('請選擇儲存格！');
+    selectedCells.forEach(activeCell => {
+      const cSpan = activeCell.colSpan || 1;
+      const rSpan = activeCell.rowSpan || 1;
+      if (cSpan === 1 && rSpan === 1) return;
+
+      activeCell.colSpan = 1; activeCell.rowSpan = 1;
+      for (let i = 1; i < cSpan; i++) {
+        const newTd = document.createElement(activeCell.tagName);
+        newTd.contentEditable = "true";
+        activeCell.parentNode.insertBefore(newTd, activeCell.nextElementSibling);
+      }
+    });
+    clearSelection();
+  }
+
+  function applyStyle(property, value) {
+    if (selectedCells.length === 0) return alert('請先選擇儲存格！');
+    if (value !== undefined && value !== null) {
+      selectedCells.forEach(cell => cell.style[property] = value);
+      if (property === 'textAlign') {
+        document.getElementById('btnAlignLeft').classList.toggle('active', value === 'left');
+        document.getElementById('btnAlignCenter').classList.toggle('active', value === 'center');
+        document.getElementById('btnAlignRight').classList.toggle('active', value === 'right');
+      }
+    }
+  }
+
+  function toggleBold() {
+    if (selectedCells.length === 0) return alert('請選擇儲存格！');
+    const isFirstBold = selectedCells[0].style.fontWeight === 'bold';
+    selectedCells.forEach(cell => cell.style.fontWeight = isFirstBold ? 'normal' : 'bold');
+    document.getElementById('btnBold').classList.toggle('active', !isFirstBold);
+  }
+
+  function toggleStrikethrough() {
+    if (selectedCells.length === 0) return alert('請先選擇儲存格！');
+    const isFirstStrike = selectedCells[0].style.textDecoration === 'line-through';
+    selectedCells.forEach(cell => cell.style.textDecoration = isFirstStrike ? 'none' : 'line-through');
+    document.getElementById('btnStrikethrough').classList.toggle('active', !isFirstStrike);
+  }
+
+  function clearStyle() {
+    if (selectedCells.length === 0) return;
+    selectedCells.forEach(cell => {
+      cell.style.fontSize = ''; cell.style.fontWeight = ''; cell.style.textDecoration = '';
+      cell.style.color = ''; cell.style.backgroundColor = ''; cell.style.textAlign = '';
+      cell.style.padding = ''; cell.style.borderWidth = '';
+    });
+    document.getElementById('btnAlignLeft').classList.remove('active');
+    document.getElementById('btnAlignCenter').classList.remove('active');
+    document.getElementById('btnAlignRight').classList.remove('active');
+    document.getElementById('btnBold').classList.remove('active');
+    document.getElementById('btnStrikethrough').classList.remove('active');
+    document.getElementById('borderWidthSelect').value = '';
+    document.getElementById('fontSizeSelect').value = '';
+  }
+
+  function addRow() {
+    const tbody = document.getElementById('tableBody');
+    const colCount = document.querySelectorAll('#tableHeader th').length;
+    const tr = document.createElement('tr');
+    for (let i = 0; i < colCount; i++) {
+      const td = document.createElement('td');
+      td.contentEditable = "true";
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+    recalculateTable(document.getElementById('dataTable'));
+  }
+
+  function deleteCurrentRow() {
+    if (selectedCells.length === 0) return alert('請選取欲刪除列！');
+    const rowsToDelete = new Set(selectedCells.map(c => c.closest('tr')).filter(tr => tr && tr.parentNode.id === 'tableBody'));
+    rowsToDelete.forEach(tr => tr.remove());
+    clearSelection();
+    recalculateTable(document.getElementById('dataTable'));
+  }
+
+  function addColumn() {
+    const headerTr = document.querySelector('#tableHeader tr');
+    const th = document.createElement('th');
+    th.contentEditable = "true";
+    th.innerText = `欄 ${headerTr.children.length + 1}`;
+    th.style.width = "80px";
+    headerTr.appendChild(th);
+
+    document.querySelectorAll('#tableBody tr').forEach(tr => {
+      const td = document.createElement('td');
+      td.contentEditable = "true";
+      tr.appendChild(td);
+    });
+
+    updateColBadges(document.getElementById('dataTable'));
+    recalculateTable(document.getElementById('dataTable'));
+  }
+
+  function deleteCurrentColumn() {
+    if (selectedCells.length === 0) return alert('請選取欲刪除欄！');
+    const colsToDelete = new Set(selectedCells.map(c => c.cellIndex));
+    const totalCols = document.querySelectorAll('#tableHeader th').length;
+    if (totalCols - colsToDelete.size < 1) return alert('至少保留一欄！');
+
+    colsToDelete.forEach(colIndex => {
+      const headTh = document.querySelector('#tableHeader tr').children[colIndex];
+      if (headTh) headTh.remove();
+      document.querySelectorAll('#tableBody tr').forEach(tr => {
+        if (tr.children[colIndex]) tr.children[colIndex].remove();
+      });
+    });
+    clearSelection();
+    updateColBadges(document.getElementById('dataTable'));
+    recalculateTable(document.getElementById('dataTable'));
+  }
+
+  function clearContent() {
+    if (selectedCells.length > 0) {
+      selectedCells.forEach(cell => {
+        cell.innerText = ''; delete cell.dataset.formula; cell.removeAttribute('data-val');
+      });
+    } else {
+      document.querySelectorAll('#tableBody td').forEach(td => {
+        td.innerText = ''; delete td.dataset.formula; td.removeAttribute('data-val');
+      });
+    }
+    recalculateTable(document.getElementById('dataTable'));
+  }
+
+  function getTableDataFromElement(tableEl) {
+    const headers = Array.from(tableEl.querySelectorAll('thead th')).map(th => {
+      const clone = th.cloneNode(true);
+      const badge = clone.querySelector('.col-badge');
+      if (badge) badge.remove();
+      return {
+        text: clone.innerText.trim(),
+        style: th.getAttribute('style') || '',
+        colSpan: th.colSpan || 1,
+        rowSpan: th.rowSpan || 1,
+        formula: th.dataset.formula || ''
+      };
+    });
+
+    const rows = Array.from(tableEl.querySelectorAll('tbody tr')).map(tr => ({
+      cells: Array.from(tr.querySelectorAll('td')).map(td => ({
+        text: td.innerText.trim(),
+        style: td.getAttribute('style') || '',
+        colSpan: td.colSpan || 1,
+        rowSpan: td.rowSpan || 1,
+        formula: td.dataset.formula || ''
+      }))
+    }));
+
+    return { headers, rows };
+  }
+
+  function renderTableFromData(targetTable, data, isEditable = true) {
+    clearSelection();
+    const thead = targetTable.querySelector('thead');
+    const tbody = targetTable.querySelector('tbody');
+    thead.innerHTML = ''; tbody.innerHTML = '';
+
+    const hTr = document.createElement('tr');
+    data.headers.forEach(h => {
+      const th = document.createElement('th');
+      th.contentEditable = isEditable;
+      th.innerText = h.text;
+      if (h.style) th.setAttribute('style', h.style);
+      if (h.colSpan > 1) th.colSpan = h.colSpan;
+      if (h.rowSpan > 1) th.rowSpan = h.rowSpan;
+      if (h.formula) th.dataset.formula = h.formula;
+      hTr.appendChild(th);
+    });
+    thead.appendChild(hTr);
+
+    data.rows.forEach(rData => {
+      const rTr = document.createElement('tr');
+      rData.cells.forEach(cell => {
+        const td = document.createElement('td');
+        td.contentEditable = isEditable;
+        td.innerText = cell.text;
+        if (cell.style) td.setAttribute('style', cell.style);
+        if (cell.colSpan > 1) td.colSpan = cell.colSpan;
+        if (cell.rowSpan > 1) td.rowSpan = cell.rowSpan;
+        if (cell.formula) td.dataset.formula = cell.formula;
+        rTr.appendChild(td);
+      });
+      tbody.appendChild(rTr);
+    });
+
+    updateColBadges(targetTable);
+    recalculateTable(targetTable);
+  }
+
+  function exportFullScreenToCSV() {
+    const fsTable = document.querySelector('#fsTableContainer table');
+    if (!fsTable) return;
+
+    let csv = [];
+    fsTable.querySelectorAll('tr').forEach(row => {
+      let rowData = [];
+      row.querySelectorAll('th, td').forEach(col => {
+        let text = col.innerText.replace(/"/g, '""');
+        rowData.push(`"${text}"`);
+      });
+      csv.push(rowData.join(','));
+    });
+
+    const csvContent = "\uFEFF" + csv.join("\n");
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${currentActiveTemplateName || '雲端表格'}_紀錄.csv`;
+    link.click();
+  }
+
+  function closeFullScreen() {
+    document.getElementById('fullscreenOverlay').style.display = 'none';
+  }
+</script>
+
+</body>
+</html>
