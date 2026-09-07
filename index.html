@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Supabase 雲端同步表格與範本系統</title>
+  <title>微米緊湊型表格與範本管理系統</title>
   <!-- 載入 Supabase JS SDK -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <style>
@@ -23,8 +23,9 @@
     input[type="text"], input[type="number"], select { padding: 1px 3px; border: 1px solid #ccc; border-radius: 2px; font-size: 11px; height: 20px; box-sizing: border-box; }
     input[type="color"] { width: 18px; height: 18px; border: none; cursor: pointer; background: transparent; padding: 0; vertical-align: middle; }
 
-    .formula-tip { font-size: 10px; color: #0056b3; background: #eef6ff; padding: 2px 6px; border-radius: 2px; border: 1px solid #b8daff; width: 100%; box-sizing: border-box; }
-    .cloud-badge { font-size: 10px; padding: 1px 4px; background: #3ecf8e; color: white; border-radius: 2px; font-weight: bold; }
+    .status-badge { font-size: 10px; padding: 1px 5px; border-radius: 2px; font-weight: bold; color: white; }
+    .status-badge.local { background: #6c757d; }
+    .status-badge.cloud { background: #3ecf8e; }
 
     .table-wrapper { overflow-x: auto; margin-top: 4px; }
     table { border-collapse: collapse; background: white; table-layout: fixed; min-width: 100%; font-size: 11px; }
@@ -41,7 +42,6 @@
       box-sizing: border-box;
     }
     th { background-color: #f1f3f5; font-weight: bold; }
-    .col-badge { display: inline-block; background: #6c757d; color: white; border-radius: 2px; padding: 0px 3px; font-size: 9px; margin-right: 2px; font-family: monospace; }
     td.selected-cell, th.selected-cell { outline: 2px solid #007bff !important; background-color: #e8f4ff !important; }
 
     .fullscreen-overlay {
@@ -54,21 +54,17 @@
 <body>
 
 <div class="container">
-  <!-- 1. 雲端範本管理區 -->
+  <!-- 1. 範本管理區 -->
   <div class="toolbar-group">
-    <label>雲端範本：</label>
-    <select id="templateSelect"><option value="">-- 載入中... --</option></select>
+    <label>範本：</label>
+    <select id="templateSelect"><option value="">-- 讀取中 --</option></select>
     <button class="primary" onclick="useTemplateFullScreen()">🚀 全螢幕使用/編輯</button>
     <button onclick="loadTemplateForEdit()">✏️ 載入主頁編輯</button>
     <button class="danger" onclick="deleteTemplate()">🗑️ 刪除範本</button>
     <span style="color:#ccc;">|</span>
     <input type="text" id="templateName" placeholder="新範本名稱" style="width:90px;">
-    <button class="success" onclick="saveTemplate()">💾 儲存至雲端</button>
-    <span class="cloud-badge">☁️ Supabase 已連線</span>
-  </div>
-
-  <div class="formula-tip">
-    💡 <b>試算公式指南：</b> 輸入以 <code>=</code> 開頭即可計算，如 <code>=A1+B1</code>、<code>=A1*1.05</code>、<code>=SUM(A1:A5)</code>、<code>=AVERAGE(A1:A5)</code>、<code>=COUNT(A1:A5)</code>
+    <button class="success" onclick="saveTemplate()">💾 儲存範本</button>
+    <span id="statusBadge" class="status-badge local">💾 本機模式</span>
   </div>
 
   <!-- 2. 表格架構與選取控制 -->
@@ -148,16 +144,16 @@
     <table id="dataTable">
       <thead id="tableHeader">
         <tr>
-          <th contenteditable="true" style="width: 80px;"><span class="col-badge">A</span>欄位 1</th>
-          <th contenteditable="true" style="width: 80px;"><span class="col-badge">B</span>欄位 2</th>
-          <th contenteditable="true" style="width: 80px;"><span class="col-badge">C</span>欄位 3</th>
+          <th contenteditable="true" style="width: 80px;">欄位 1</th>
+          <th contenteditable="true" style="width: 80px;">欄位 2</th>
+          <th contenteditable="true" style="width: 80px;">欄位 3</th>
         </tr>
       </thead>
       <tbody id="tableBody">
         <tr>
-          <td contenteditable="true">10</td>
-          <td contenteditable="true">20</td>
-          <td contenteditable="true">=A1+B1</td>
+          <td contenteditable="true">內容 A1</td>
+          <td contenteditable="true">內容 B1</td>
+          <td contenteditable="true">內容 C1</td>
         </tr>
       </tbody>
     </table>
@@ -181,41 +177,61 @@
 
 <script>
   /* ----------------------------------------------------
-     Supabase 設定區 (請將以下替換為您的 Supabase 專案資訊)
+     Supabase 雲端設定區 (若填寫正確將自動開啟雲端同步)
   ---------------------------------------------------- */
   const SUPABASE_URL = 'https://fujxiabyxqzygtxyalol.supabase.co'; 
   const SUPABASE_ANON_KEY = 'sb_publishable_jjMV0mndB2do5uV4S8W8_w_r3LUSZIf';
-  const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  
+  let supabaseClient = null;
+  let isCloudEnabled = false;
 
   let selectedCells = [];
   let isMultiSelectMode = false;
   let currentActiveTemplateName = '';
 
   document.addEventListener('DOMContentLoaded', () => {
+    initSupabaseConnection();
     bindTableEvents(document.getElementById('dataTable'));
-    updateColBadges(document.getElementById('dataTable'));
-    recalculateTable(document.getElementById('dataTable'));
-    fetchTemplatesFromCloud(); // 頁面初始化時自動抓取雲端範本
+    refreshTemplateDropdown();
   });
 
-  /* --- Supabase 雲端資料庫操作 --- */
-  async function fetchTemplatesFromCloud() {
-    const select = document.getElementById('templateSelect');
-    select.innerHTML = '<option value="">-- 讀取雲端範本中... --</option>';
+  function initSupabaseConnection() {
+    if (typeof supabase !== 'undefined' && SUPABASE_URL.startsWith('http')) {
+      try {
+        supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+        isCloudEnabled = true;
+        const badge = document.getElementById('statusBadge');
+        badge.innerText = '☁️ 雲端模式';
+        badge.className = 'status-badge cloud';
+      } catch (e) {
+        console.warn('Supabase 未正確設定，自動開啟本機模式。');
+      }
+    }
+  }
 
-    const { data, error } = await supabaseClient.from('templates').select('name').order('name');
-    
-    if (error) {
-      console.error(error);
-      select.innerHTML = '<option value="">❌ 載入失敗，請檢查 Supabase 金鑰</option>';
-      return;
+  /* --- 範本存取雙模介面 --- */
+  async function refreshTemplateDropdown() {
+    const select = document.getElementById('templateSelect');
+    select.innerHTML = '<option value="">-- 載入中... --</option>';
+
+    if (isCloudEnabled) {
+      const { data, error } = await supabaseClient.from('templates').select('name').order('name');
+      if (!error && data) {
+        select.innerHTML = '<option value="">-- 選擇雲端範本 --</option>';
+        data.forEach(item => {
+          const option = document.createElement('option');
+          option.value = item.name; option.textContent = item.name;
+          select.appendChild(option);
+        });
+        return;
+      }
     }
 
-    select.innerHTML = '<option value="">-- 選擇雲端範本 --</option>';
-    data.forEach(item => {
+    select.innerHTML = '<option value="">-- 選擇本機範本 --</option>';
+    const templates = JSON.parse(localStorage.getItem('webTableTemplates_v13') || '{}');
+    Object.keys(templates).forEach(name => {
       const option = document.createElement('option');
-      option.value = item.name;
-      option.textContent = item.name;
+      option.value = name; option.textContent = name;
       select.appendChild(option);
     });
   }
@@ -227,66 +243,84 @@
 
     const tableData = getTableDataFromElement(document.getElementById('dataTable'));
 
-    const { error } = await supabaseClient.from('templates').upsert({
-      name: name,
-      data: tableData,
-      updated_at: new Date()
-    }, { onConflict: 'name' });
-
-    if (error) {
-      alert('儲存失敗：' + error.message);
+    if (isCloudEnabled) {
+      const { error } = await supabaseClient.from('templates').upsert({
+        name: name, data: tableData, updated_at: new Date()
+      }, { onConflict: 'name' });
+      if (error) return alert('雲端儲存失敗：' + error.message);
     } else {
-      nameInput.value = '';
-      await fetchTemplatesFromCloud();
-      alert(`範本「${name}」已成功同步上傳至雲端！`);
+      const templates = JSON.parse(localStorage.getItem('webTableTemplates_v13') || '{}');
+      templates[name] = tableData;
+      localStorage.setItem('webTableTemplates_v13', JSON.stringify(templates));
     }
+
+    nameInput.value = '';
+    await refreshTemplateDropdown();
+    alert(`範本「${name}」已成功儲存！`);
   }
 
   async function loadTemplateForEdit() {
     const name = document.getElementById('templateSelect').value;
-    if (!name) return alert('請先選擇雲端範本！');
+    if (!name) return alert('請先選擇範本！');
 
-    const { data, error } = await supabaseClient.from('templates').select('data').eq('name', name).single();
-
-    if (error || !data) {
-      alert('無法載入該範本！');
+    let templateData = null;
+    if (isCloudEnabled) {
+      const { data } = await supabaseClient.from('templates').select('data').eq('name', name).single();
+      if (data) templateData = data.data;
     } else {
+      const templates = JSON.parse(localStorage.getItem('webTableTemplates_v13') || '{}');
+      templateData = templates[name];
+    }
+
+    if (templateData) {
       currentActiveTemplateName = name;
-      renderTableFromData(document.getElementById('dataTable'), data.data, true);
-      alert(`已成功載入雲端範本「${name}」！`);
+      renderTableFromData(document.getElementById('dataTable'), templateData, true);
+      alert(`已成功載入範本「${name}」！`);
+    } else {
+      alert('無法載入該範本！');
     }
   }
 
   async function deleteTemplate() {
     const name = document.getElementById('templateSelect').value;
-    if (!name) return alert('請先選擇要刪除的雲端範本！');
+    if (!name) return alert('請先選擇要刪除的範本！');
 
-    if (confirm(`確定要從雲端永久刪除範本「${name}」嗎？`)) {
-      const { error } = await supabaseClient.from('templates').delete().eq('name', name);
-      if (error) {
-        alert('刪除失敗：' + error.message);
+    if (confirm(`確定刪除範本「${name}」嗎？`)) {
+      if (isCloudEnabled) {
+        await supabaseClient.from('templates').delete().eq('name', name);
       } else {
-        await fetchTemplatesFromCloud();
-        alert(`範本「${name}」已刪除！`);
+        const templates = JSON.parse(localStorage.getItem('webTableTemplates_v13') || '{}');
+        delete templates[name];
+        localStorage.setItem('webTableTemplates_v13', JSON.stringify(templates));
       }
+      await refreshTemplateDropdown();
+      alert(`範本「${name}」已刪除！`);
     }
   }
 
   async function useTemplateFullScreen() {
     const name = document.getElementById('templateSelect').value;
-    if (!name) return alert('請先選擇雲端範本！');
+    if (!name) return alert('請先選擇範本！');
 
-    const { data, error } = await supabaseClient.from('templates').select('data').eq('name', name).single();
-    if (error || !data) return alert('無法載入範本！');
+    let templateData = null;
+    if (isCloudEnabled) {
+      const { data } = await supabaseClient.from('templates').select('data').eq('name', name).single();
+      if (data) templateData = data.data;
+    } else {
+      const templates = JSON.parse(localStorage.getItem('webTableTemplates_v13') || '{}');
+      templateData = templates[name];
+    }
+
+    if (!templateData) return alert('無法載入範本！');
 
     currentActiveTemplateName = name;
     const container = document.getElementById('fsTableContainer');
     container.innerHTML = '<table><thead></thead><tbody></tbody></table>';
     const fsTable = container.querySelector('table');
-    renderTableFromData(fsTable, data.data, true);
+    renderTableFromData(fsTable, templateData, true);
     bindTableEvents(fsTable);
 
-    document.getElementById('fsTitle').innerText = `全螢幕使用/試算：${name}`;
+    document.getElementById('fsTitle').innerText = `全螢幕使用/編輯：${name}`;
     document.getElementById('fullscreenOverlay').style.display = 'block';
   }
 
@@ -294,16 +328,18 @@
     const fsTable = document.querySelector('#fsTableContainer table');
     if (!fsTable || !currentActiveTemplateName) return;
 
-    if (confirm(`確定要將目前的修改同步覆蓋回雲端範本「${currentActiveTemplateName}」嗎？`)) {
+    if (confirm(`確定覆蓋儲存範本「${currentActiveTemplateName}」嗎？`)) {
       const tableData = getTableDataFromElement(fsTable);
-      const { error } = await supabaseClient.from('templates').upsert({
-        name: currentActiveTemplateName,
-        data: tableData,
-        updated_at: new Date()
-      }, { onConflict: 'name' });
-
-      if (error) alert('更新失敗：' + error.message);
-      else alert(`雲端範本「${currentActiveTemplateName}」已更新！`);
+      if (isCloudEnabled) {
+        await supabaseClient.from('templates').upsert({
+          name: currentActiveTemplateName, data: tableData, updated_at: new Date()
+        }, { onConflict: 'name' });
+      } else {
+        const templates = JSON.parse(localStorage.getItem('webTableTemplates_v13') || '{}');
+        templates[currentActiveTemplateName] = tableData;
+        localStorage.setItem('webTableTemplates_v13', JSON.stringify(templates));
+      }
+      alert(`範本「${currentActiveTemplateName}」已更新！`);
     }
   }
 
@@ -315,130 +351,21 @@
     if (!name || !name.trim()) return;
 
     const tableData = getTableDataFromElement(fsTable);
-    const { error } = await supabaseClient.from('templates').upsert({
-      name: name.trim(),
-      data: tableData,
-      updated_at: new Date()
-    }, { onConflict: 'name' });
-
-    if (error) {
-      alert('儲存失敗：' + error.message);
+    if (isCloudEnabled) {
+      await supabaseClient.from('templates').upsert({
+        name: name.trim(), data: tableData, updated_at: new Date()
+      }, { onConflict: 'name' });
     } else {
-      await fetchTemplatesFromCloud();
-      alert(`已成功另存為新雲端範本「${name.trim()}」！`);
+      const templates = JSON.parse(localStorage.getItem('webTableTemplates_v13') || '{}');
+      templates[name.trim()] = tableData;
+      localStorage.setItem('webTableTemplates_v13', JSON.stringify(templates));
     }
+
+    await refreshTemplateDropdown();
+    alert(`已成功另存為「${name.trim()}」！`);
   }
 
-  /* --- 試算公式引擎 --- */
-  function colLetterToIndex(colStr) {
-    let num = 0;
-    for (let i = 0; i < colStr.length; i++) num = num * 26 + (colStr.charCodeAt(i) - 64);
-    return num - 1;
-  }
-
-  function indexToColLetter(index) {
-    let temp, letter = '';
-    while (index >= 0) {
-      temp = index % 26;
-      letter = String.fromCharCode(temp + 65) + letter;
-      index = Math.floor(index / 26) - 1;
-    }
-    return letter;
-  }
-
-  function getCellValueByRef(ref, table) {
-    const match = ref.toUpperCase().match(/^([A-Z]+)([0-9]+)$/);
-    if (!match) return 0;
-    const colIdx = colLetterToIndex(match[1]);
-    const rowIdx = parseInt(match[2], 10) - 1;
-    const rows = table.querySelectorAll('tbody tr');
-    if (rows[rowIdx] && rows[rowIdx].children[colIdx]) {
-      const cell = rows[rowIdx].children[colIdx];
-      const val = parseFloat(cell.getAttribute('data-val') || cell.innerText.trim());
-      return isNaN(val) ? 0 : val;
-    }
-    return 0;
-  }
-
-  function getRangeValues(rangeStr, table) {
-    const [start, end] = rangeStr.split(':');
-    if (!end) return [getCellValueByRef(start, table)];
-    const m1 = start.toUpperCase().match(/^([A-Z]+)([0-9]+)$/);
-    const m2 = end.toUpperCase().match(/^([A-Z]+)([0-9]+)$/);
-    if (!m1 || !m2) return [];
-
-    const colStart = colLetterToIndex(m1[1]), rowStart = parseInt(m1[2], 10) - 1;
-    const colEnd = colLetterToIndex(m2[1]), rowEnd = parseInt(m2[2], 10) - 1;
-
-    const vals = [];
-    const rows = table.querySelectorAll('tbody tr');
-    for (let r = Math.min(rowStart, rowEnd); r <= Math.max(rowStart, rowEnd); r++) {
-      if (rows[r]) {
-        for (let c = Math.min(colStart, colEnd); c <= Math.max(colStart, colEnd); c++) {
-          if (rows[r].children[c]) {
-            const cell = rows[r].children[c];
-            const val = parseFloat(cell.getAttribute('data-val') || cell.innerText.trim());
-            vals.push(isNaN(val) ? 0 : val);
-          }
-        }
-      }
-    }
-    return vals;
-  }
-
-  function evaluateFormula(formula, table) {
-    try {
-      let expr = formula.substring(1).trim().toUpperCase();
-      expr = expr.replace(/(SUM|AVERAGE|AVG|COUNT|MIN|MAX)\(([^)]+)\)/g, (match, func, args) => {
-        let numbers = [];
-        args.split(',').forEach(part => {
-          part = part.trim();
-          if (part.includes(':')) numbers = numbers.concat(getRangeValues(part, table));
-          else numbers.push(getCellValueByRef(part, table));
-        });
-        if (func === 'SUM') return numbers.reduce((a, b) => a + b, 0);
-        if (func === 'AVERAGE' || func === 'AVG') return numbers.length ? (numbers.reduce((a, b) => a + b, 0) / numbers.length) : 0;
-        if (func === 'COUNT') return numbers.length;
-        if (func === 'MIN') return numbers.length ? Math.min(...numbers) : 0;
-        if (func === 'MAX') return numbers.length ? Math.max(...numbers) : 0;
-        return 0;
-      });
-
-      expr = expr.replace(/\b([A-Z]+[0-9]+)\b/g, (match) => getCellValueByRef(match, table));
-
-      if (/^[0-9.+\-*/() ]+$/.test(expr)) {
-        const result = Function('"use strict"; return (' + expr + ')')();
-        return isNaN(result) ? '#VALUE!' : (Math.round(result * 100000) / 100000);
-      } else return '#ERROR!';
-    } catch (e) { return '#ERROR!'; }
-  }
-
-  function recalculateTable(table) {
-    for (let pass = 0; pass < 3; pass++) {
-      const cells = table.querySelectorAll('td[data-formula], th[data-formula]');
-      cells.forEach(cell => {
-        const formula = cell.dataset.formula;
-        if (formula) {
-          const val = evaluateFormula(formula, table);
-          cell.setAttribute('data-val', val);
-          if (document.activeElement !== cell) cell.innerText = val;
-        }
-      });
-    }
-  }
-
-  function updateColBadges(table) {
-    table.querySelectorAll('thead th').forEach((th, idx) => {
-      let badge = th.querySelector('.col-badge');
-      if (!badge) {
-        badge = document.createElement('span');
-        badge.className = 'col-badge';
-        th.prepend(badge);
-      }
-      badge.innerText = indexToColLetter(idx);
-    });
-  }
-
+  /* --- 儲存格互動事件 --- */
   function bindTableEvents(table) {
     table.addEventListener('click', (e) => {
       const cell = e.target.closest('th, td');
@@ -459,26 +386,9 @@
       }
       syncToolbarWithSelection();
     });
-
-    table.addEventListener('focusin', (e) => {
-      const cell = e.target.closest('th, td');
-      if (cell && cell.dataset.formula) cell.innerText = cell.dataset.formula;
-    });
-
-    table.addEventListener('focusout', (e) => {
-      const cell = e.target.closest('th, td');
-      if (cell) {
-        const text = cell.innerText.trim();
-        if (text.startsWith('=')) cell.dataset.formula = text;
-        else { delete cell.dataset.formula; cell.removeAttribute('data-val'); }
-        recalculateTable(table);
-      }
-    });
-
-    table.addEventListener('input', () => recalculateTable(table));
   }
 
-  /* --- 介面操作輔助函式 --- */
+  /* --- 工具列功能 --- */
   function toggleMultiSelectMode() {
     isMultiSelectMode = !isMultiSelectMode;
     const btn = document.getElementById('btnMultiSelectMode');
@@ -582,7 +492,7 @@
   }
 
   function applyStyle(property, value) {
-    if (selectedCells.length === 0) return alert('請先選擇儲存格！');
+    if (selectedCells.length === 0) return alert('請先點選儲存格！');
     if (value !== undefined && value !== null) {
       selectedCells.forEach(cell => cell.style[property] = value);
       if (property === 'textAlign') {
@@ -594,14 +504,14 @@
   }
 
   function toggleBold() {
-    if (selectedCells.length === 0) return alert('請選擇儲存格！');
+    if (selectedCells.length === 0) return alert('請點選儲存格！');
     const isFirstBold = selectedCells[0].style.fontWeight === 'bold';
     selectedCells.forEach(cell => cell.style.fontWeight = isFirstBold ? 'normal' : 'bold');
     document.getElementById('btnBold').classList.toggle('active', !isFirstBold);
   }
 
   function toggleStrikethrough() {
-    if (selectedCells.length === 0) return alert('請先選擇儲存格！');
+    if (selectedCells.length === 0) return alert('請先點選儲存格！');
     const isFirstStrike = selectedCells[0].style.textDecoration === 'line-through';
     selectedCells.forEach(cell => cell.style.textDecoration = isFirstStrike ? 'none' : 'line-through');
     document.getElementById('btnStrikethrough').classList.toggle('active', !isFirstStrike);
@@ -633,7 +543,6 @@
       tr.appendChild(td);
     }
     tbody.appendChild(tr);
-    recalculateTable(document.getElementById('dataTable'));
   }
 
   function deleteCurrentRow() {
@@ -641,7 +550,6 @@
     const rowsToDelete = new Set(selectedCells.map(c => c.closest('tr')).filter(tr => tr && tr.parentNode.id === 'tableBody'));
     rowsToDelete.forEach(tr => tr.remove());
     clearSelection();
-    recalculateTable(document.getElementById('dataTable'));
   }
 
   function addColumn() {
@@ -657,9 +565,6 @@
       td.contentEditable = "true";
       tr.appendChild(td);
     });
-
-    updateColBadges(document.getElementById('dataTable'));
-    recalculateTable(document.getElementById('dataTable'));
   }
 
   function deleteCurrentColumn() {
@@ -676,44 +581,30 @@
       });
     });
     clearSelection();
-    updateColBadges(document.getElementById('dataTable'));
-    recalculateTable(document.getElementById('dataTable'));
   }
 
   function clearContent() {
     if (selectedCells.length > 0) {
-      selectedCells.forEach(cell => {
-        cell.innerText = ''; delete cell.dataset.formula; cell.removeAttribute('data-val');
-      });
+      selectedCells.forEach(cell => cell.innerText = '');
     } else {
-      document.querySelectorAll('#tableBody td').forEach(td => {
-        td.innerText = ''; delete td.dataset.formula; td.removeAttribute('data-val');
-      });
+      document.querySelectorAll('#tableBody td').forEach(td => td.innerText = '');
     }
-    recalculateTable(document.getElementById('dataTable'));
   }
 
   function getTableDataFromElement(tableEl) {
-    const headers = Array.from(tableEl.querySelectorAll('thead th')).map(th => {
-      const clone = th.cloneNode(true);
-      const badge = clone.querySelector('.col-badge');
-      if (badge) badge.remove();
-      return {
-        text: clone.innerText.trim(),
-        style: th.getAttribute('style') || '',
-        colSpan: th.colSpan || 1,
-        rowSpan: th.rowSpan || 1,
-        formula: th.dataset.formula || ''
-      };
-    });
+    const headers = Array.from(tableEl.querySelectorAll('thead th')).map(th => ({
+      text: th.innerText.trim(),
+      style: th.getAttribute('style') || '',
+      colSpan: th.colSpan || 1,
+      rowSpan: th.rowSpan || 1
+    }));
 
     const rows = Array.from(tableEl.querySelectorAll('tbody tr')).map(tr => ({
       cells: Array.from(tr.querySelectorAll('td')).map(td => ({
         text: td.innerText.trim(),
         style: td.getAttribute('style') || '',
         colSpan: td.colSpan || 1,
-        rowSpan: td.rowSpan || 1,
-        formula: td.dataset.formula || ''
+        rowSpan: td.rowSpan || 1
       }))
     }));
 
@@ -734,7 +625,6 @@
       if (h.style) th.setAttribute('style', h.style);
       if (h.colSpan > 1) th.colSpan = h.colSpan;
       if (h.rowSpan > 1) th.rowSpan = h.rowSpan;
-      if (h.formula) th.dataset.formula = h.formula;
       hTr.appendChild(th);
     });
     thead.appendChild(hTr);
@@ -748,14 +638,10 @@
         if (cell.style) td.setAttribute('style', cell.style);
         if (cell.colSpan > 1) td.colSpan = cell.colSpan;
         if (cell.rowSpan > 1) td.rowSpan = cell.rowSpan;
-        if (cell.formula) td.dataset.formula = cell.formula;
         rTr.appendChild(td);
       });
       tbody.appendChild(rTr);
     });
-
-    updateColBadges(targetTable);
-    recalculateTable(targetTable);
   }
 
   function exportFullScreenToCSV() {
@@ -777,7 +663,7 @@
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `${currentActiveTemplateName || '雲端表格'}_紀錄.csv`;
+    link.download = `${currentActiveTemplateName || '表格'}_紀錄.csv`;
     link.click();
   }
 
