@@ -78,7 +78,8 @@
     <button onclick="deleteCurrentRow()">- 刪除列</button>
     <button onclick="addColumn()">+ 新增欄</button>
     <button onclick="deleteCurrentColumn()">- 刪除欄</button>
-    <button class="danger" onclick="clearContent()">清空</button>
+    <button class="danger" onclick="clearContent()">清空文字</button>
+    <button class="danger" onclick="resetTableRows()">🧹 清除表格(僅留標題)</button>
   </div>
 
   <!-- 3. 合併與尺寸/邊界/內距微調區 -->
@@ -588,6 +589,14 @@
       selectedCells.forEach(cell => cell.innerText = '');
     } else {
       document.querySelectorAll('#tableBody td').forEach(td => td.innerText = '');
+    }
+  }
+
+  /* 清除表格，僅保留第一列標題 */
+  function resetTableRows() {
+    if (confirm('確定要刪除所有資料列，只保留第一列標題嗎？')) {
+      document.getElementById('tableBody').innerHTML = '';
+      clearSelection();
     }
   }
 
